@@ -45,5 +45,13 @@ python main_sfl.py driving_carla_multi \
 
 
 
-
+// Wifi NDN
+cd /home/hurair/ndnSIM/ns-3/scratch/gaia-sfl-python
 python main_sfl.py driving_gazebo --network_name gaia --network_backend wifi_ndn --model FADNet --n_rounds 10 --bz_train 32 --bz_test 32 --device cuda --log_freq 1 --local_steps 1 --lr 0.001 --decay constant 2>&1 | tee ../gaia-sfl-ndn-wifi/sfl_wifi_ndn_10round_test.log
+
+
+// Wifi TCP
+cd /home/hurair/ndnSIM/ns-3/scratch/gaia-sfl-python
+python main_sfl.py driving_gazebo --network_name gaia --network_backend wifi_tcp --model FADNet --n_rounds 3000 --bz_train 32 --bz_test 32 --device cuda --log_freq 40 --local_steps 1 --lr 0.001 --decay constant 2>&1 | tee ../gaia-sfl-tcp-wifi/sfl_wifi_tcp_training.log
+
+

@@ -36,12 +36,26 @@ if __name__ == "__main__":
             deadline=90.0,
             program="gaia-sfl-ndn-wifi",
             trace_prefix="wifi_ndn",
-            # Download (single broadcaster) works fine with the default
-            # ConsumerWindow. Upload (11 concurrent broadcasters) needs
-            # ConsumerCbr's fixed-rate pacing instead — ConsumerWindow's
-            # AIMD hard-reset-on-timeout causes a starvation collapse
-            # under multi-station WiFi contention; see gaia-sfl-ndn-wifi.cc.
-            upload_extra_args="--consumerType=cbr --cbrFrequency=20",
+            # gaia-sfl-ndn-wifi.cc always uses ConsumerCbr now (its
+            # steady, fixed-rate pacing beat ConsumerWindow's AIMD for
+            # both phases — ConsumerWindow caused uneven/incomplete
+            # downloads even with a single broadcaster, and a full
+            # starvation collapse under upload's multi-concurrent-
+            # broadcaster contention). cbrFrequency is the only knob
+            # left to pass.
+            download_extra_args="--cbrFrequency=20",
+            upload_extra_args="--cbrFrequency=20",
+        )
+    elif args.network_backend == "wifi_tcp":
+        backend = Ns3TcpBackend(
+            model_bytes=MODEL_BYTES,
+            deadline=20.0,
+            program="gaia-sfl-tcp-wifi",
+            # gaia-sfl-tcp-wifi.cc indexes WiFi stations by position
+            # among the active silos, not by real silo ID, so numSilos
+            # only ever needs to be len(active_silos) — no idle
+            # stations, unlike the wired scenario's per-ID P2P links.
+            compact_topology=True,
         )
     else:
 

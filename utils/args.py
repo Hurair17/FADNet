@@ -40,6 +40,7 @@ def parse_args(args_list=None):
             "wired_tcp",
             "wired_ndn",
             "wifi_ndn",
+            "wifi_tcp",
 
         ],
     )

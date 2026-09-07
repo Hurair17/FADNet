@@ -7,6 +7,7 @@
 
 #include "ns3/ndnSIM-module.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -38,11 +39,9 @@ main(int argc, char* argv[])
 
     uint32_t payloadSize = 4096;
 
-    uint32_t windowSize = 20;
+    double cbrFrequency = 100.0;
 
-    std::string consumerType = "window";
-
-    double cbrFrequency = 20.0;
+    std::string cbrRandomize = "none";
 
     std::string runId = "";
 
@@ -51,6 +50,8 @@ main(int argc, char* argv[])
     uint32_t uploadBatchSize = 0;
 
     double startJitter = 0.5;
+
+    std::string wifiMode = "infra";
 
     bool enableAnim = false;
 
@@ -93,29 +94,25 @@ main(int argc, char* argv[])
     );
 
     cmd.AddValue(
-        "window",
-        "ConsumerWindow initial window (only used when "
-        "consumerType=window)",
-        windowSize
-    );
-
-    cmd.AddValue(
-        "consumerType",
-        "\"window\" (default) uses ns3::ndn::ConsumerWindow, "
-        "an AIMD-style flow control that can burst aggressively "
-        "and hard-resets on any timeout. \"cbr\" uses "
-        "ns3::ndn::ConsumerCbr instead, which sends Interests at "
-        "a fixed, open-loop rate (see cbrFrequency) with no "
-        "burst/collapse dynamics — useful for keeping many "
-        "concurrent uploaders' aggregate offered load under "
-        "control on a shared WiFi channel.",
-        consumerType
-    );
-
-    cmd.AddValue(
         "cbrFrequency",
-        "Interests per second per silo when consumerType=cbr",
+        "Interests per second per silo (ns3::ndn::ConsumerCbr's "
+        "fixed, open-loop rate). Used for both download and upload — "
+        "ConsumerWindow's AIMD (uncapped growth on success, hard "
+        "reset on any timeout) caused uneven/incomplete downloads "
+        "even with a single broadcaster, and a full starvation "
+        "collapse under upload's multi-concurrent-broadcaster "
+        "contention. ConsumerCbr's steady pacing fixed both.",
         cbrFrequency
+    );
+
+    cmd.AddValue(
+        "cbrRandomize",
+        "ns3::ndn::ConsumerCbr's own \"Randomize\" attribute: "
+        "\"none\" (default, fixed 1/Frequency spacing), \"uniform\", "
+        "or \"exponential\" — jitters every Interest's send time "
+        "throughout the run, not just the flow's first one (that's "
+        "startJitter, a separate, one-time offset).",
+        cbrRandomize
     );
 
     cmd.AddValue(
@@ -138,6 +135,36 @@ main(int argc, char* argv[])
         "their first Interest/Data in the exact same instant, which "
         "otherwise maximizes the very first collision. 0 disables it.",
         startJitter
+    );
+
+    cmd.AddValue(
+        "activeSilos",
+        "Comma-separated list of the specific silo IDs that should "
+        "actually generate traffic this run (e.g. \"5,6,7,9\"). Empty "
+        "(default) means every silo 0..numSilos-1 is active. The WiFi "
+        "topology still creates all numSilos stations either way (node "
+        "count/positions are unaffected) — this only controls which "
+        "ones get a Producer/Consumer installed, so the caller isn't "
+        "forced to simulate contention from silos it never asked for "
+        "(e.g. numSilos=10 to cover silo IDs up to 9 would otherwise "
+        "spin up full traffic for silos 0-4 and 8 too, even if only "
+        "5, 6, 7, 9 were actually requested).",
+        activeSilos
+    );
+
+    cmd.AddValue(
+        "wifiMode",
+        "\"infra\" (default): RSU is a real AP (ns3::ApWifiMac), "
+        "silos are stations (ns3::StaWifiMac) that associate to it — "
+        "matches a real roadside WiFi router. \"adhoc\": every node "
+        "(RSU and silos) uses ns3::AdhocWifiMac instead — no AP role, "
+        "no association handshake. Both modes use the identical "
+        "underlying CSMA/CA (ns3::RegularWifiMac base), so this does "
+        "not change collision-avoidance behavior — it only removes "
+        "the association step (already eliminated separately by "
+        "sizing numSilos to just the active silos) and reflects the "
+        "OCB-style, connectionless pattern real 802.11p V2X uses.",
+        wifiMode
     );
 
     cmd.AddValue(
@@ -279,30 +306,46 @@ main(int argc, char* argv[])
         "ns3::MinstrelHtWifiManager"
     );
 
-    Ssid ssid = Ssid("gaia-sfl-rsu");
     WifiMacHelper wifiMac;
 
-    // Silos are stations associated to the RSU's access point
-    wifiMac.SetType(
-        "ns3::StaWifiMac",
-        "Ssid", SsidValue(ssid),
-        "ActiveProbing", BooleanValue(false)
-    );
+    NetDeviceContainer staDevices;
+    NetDeviceContainer apDevice;
 
-    NetDeviceContainer staDevices =
-        wifi.Install(wifiPhy, wifiMac, silos);
+    if (wifiMode == "adhoc")
+    {
+        // No AP, no association — every node (RSU included) is a
+        // symmetric peer on the same channel, OCB-style.
+        wifiMac.SetType(
+            "ns3::AdhocWifiMac"
+        );
 
-    // RSU is the access point all silos share the channel with
-    wifiMac.SetType(
-        "ns3::ApWifiMac",
-        "Ssid", SsidValue(ssid)
-    );
+        staDevices = wifi.Install(wifiPhy, wifiMac, silos);
+        apDevice = wifi.Install(wifiPhy, wifiMac, rsu);
+    }
+    else
+    {
+        Ssid ssid = Ssid("gaia-sfl-rsu");
 
-    NodeContainer apNode;
-    apNode.Add(rsu);
+        // Silos are stations associated to the RSU's access point
+        wifiMac.SetType(
+            "ns3::StaWifiMac",
+            "Ssid", SsidValue(ssid),
+            "ActiveProbing", BooleanValue(false)
+        );
 
-    NetDeviceContainer apDevice =
-        wifi.Install(wifiPhy, wifiMac, apNode);
+        staDevices = wifi.Install(wifiPhy, wifiMac, silos);
+
+        // RSU is the access point all silos share the channel with
+        wifiMac.SetType(
+            "ns3::ApWifiMac",
+            "Ssid", SsidValue(ssid)
+        );
+
+        NodeContainer apNode;
+        apNode.Add(rsu);
+
+        apDevice = wifi.Install(wifiPhy, wifiMac, apNode);
+    }
 
     // -----------------------------------------------------
     // Node positions (RSU at the center, server pulled out
@@ -389,36 +432,95 @@ const double stopTime =
     startTime + deadline;
 
 // -----------------------------------------------------
-// Model size
-// -----------------------------------------------------
-
-double modelSizeMiB =
-    static_cast<double>(modelBytes)
-    /
-    (1024.0 * 1024.0);
-
-// -----------------------------------------------------
 // Producer/consumer pairs
 // -----------------------------------------------------
 
 Ptr<UniformRandomVariable> jitterRand =
     CreateObject<UniformRandomVariable>();
 
-for (uint32_t silo = 0;
-     silo < numSilos;
-     ++silo)
+// Download: every silo asks for the exact same global-model name
+// (no /silo/<id> suffix) so the RSU's PIT aggregates concurrent
+// requests and its CS can serve the cached global model to
+// stragglers. Since the name never varies by silo, the producer
+// only needs to be installed once, here, before the silo loop —
+// installing it again per silo would just be numSilos redundant
+// Producer apps on the server for the exact same name.
+std::ostringstream downloadPrefix;
+downloadPrefix
+    << "/sfl/global/round/"
+    << round
+    << "/silo/";
+
+if (phase == "download")
 {
+    ns3::ndn::AppHelper globalProducer(
+        "ns3::ndn::Producer"
+    );
+
+    globalProducer.SetPrefix(
+        downloadPrefix.str()
+    );
+
+    globalProducer.SetAttribute(
+        "PayloadSize",
+        UintegerValue(payloadSize)
+    );
+
+    globalProducer.Install(
+        server
+    );
+
+    routingHelper.AddOrigins(
+        downloadPrefix.str(),
+        server
+    );
+}
+
+// Which silo IDs actually get a Producer/Consumer installed this
+// run. Empty activeSilos (the default) means all of them, preserving
+// prior behavior. The list is sorted because for upload, all
+// consumers live on the same node (the server), so ns-3 assigns
+// their AppIds by installation order (0, 1, 2, ...) — the Nth
+// installed app is AppId N. Ns3NdnBackend.py maps AppId back to a
+// real silo ID via the same sorted order, so this order must match.
+std::vector<uint32_t> activeSiloList;
+
+if (activeSilos.empty())
+{
+    for (uint32_t i = 0; i < numSilos; ++i)
+    {
+        activeSiloList.push_back(i);
+    }
+}
+else
+{
+    std::stringstream activeSilosStream(activeSilos);
+    std::string token;
+
+    while (std::getline(activeSilosStream, token, ','))
+    {
+        activeSiloList.push_back(
+            static_cast<uint32_t>(std::stoul(token))
+        );
+    }
+
+    std::sort(
+        activeSiloList.begin(),
+        activeSiloList.end()
+    );
+}
+
+for (uint32_t loopIdx = 0;
+     loopIdx < activeSiloList.size();
+     ++loopIdx)
+{
+    uint32_t silo = activeSiloList[loopIdx];
+
     std::ostringstream prefix;
 
     if (phase == "download")
     {
-        // Shared name for every silo (no /silo/<id> suffix) so the
-        // RSU's PIT aggregates concurrent requests and its CS can
-        // serve the cached global model to stragglers.
-        prefix
-            << "/sfl/global/round/"
-            << round
-            << "/silo/";
+        prefix << downloadPrefix.str();
     }
     else
     {
@@ -429,21 +531,28 @@ for (uint32_t silo = 0;
             << silo;
     }
 
+    // Upload only: each silo owns a distinct local model, so
+    // (unlike download) it needs its own Producer, installed
+    // below inside this loop.
     Ptr<Node> producerNode;
     Ptr<Node> consumerNode;
 
+    // silos.Get() is indexed by loopIdx (position among the silos
+    // actually active this run), not by the real silo ID — the WiFi
+    // topology only ever has activeSiloList.size() stations (see
+    // numSilos, sized by Ns3NdnBackend to match), so a sparse real ID
+    // like 9 would be out of bounds if used as a station index here.
+    // The real silo ID is still what goes into the NDN name (via
+    // `silo` elsewhere), so results still map back to the right silo.
     if (phase == "download")
     {
-        // Server owns global model
-        producerNode = server;
-
         // Silo requests global model
-        consumerNode = silos.Get(silo);
+        consumerNode = silos.Get(loopIdx);
     }
     else
     {
         // Silo owns its locally trained model
-        producerNode = silos.Get(silo);
+        producerNode = silos.Get(loopIdx);
 
         // Server requests local model
         consumerNode = server;
@@ -465,7 +574,10 @@ for (uint32_t silo = 0;
 
     if (phase == "upload" && uploadBatchSize > 0)
     {
-        uint32_t batchIndex = silo / uploadBatchSize;
+        // Grouped by position among the active silos (loopIdx), not
+        // by real silo ID — real IDs can be sparse (e.g. 5,6,7,9),
+        // which wouldn't divide into clean, evenly-sized batches.
+        uint32_t batchIndex = loopIdx / uploadBatchSize;
 
         siloStartTime =
             startTime +
@@ -489,82 +601,72 @@ for (uint32_t silo = 0;
     }
 
     // ---------------------------------------------
-    // Producer
+    // Producer (upload only — download's producer was already
+    // installed once, above the loop)
     // ---------------------------------------------
 
-    ns3::ndn::AppHelper producer(
-        "ns3::ndn::Producer"
-    );
+    if (phase == "upload")
+    {
+        ns3::ndn::AppHelper producer(
+            "ns3::ndn::Producer"
+        );
 
-    producer.SetPrefix(
-        prefix.str()
-    );
+        producer.SetPrefix(
+            prefix.str()
+        );
 
-    producer.SetAttribute(
-        "PayloadSize",
-        UintegerValue(payloadSize)
-    );
+        producer.SetAttribute(
+            "PayloadSize",
+            UintegerValue(payloadSize)
+        );
 
-    producer.Install(
-        producerNode
-    );
+        producer.Install(
+            producerNode
+        );
 
-    routingHelper.AddOrigins(
-        prefix.str(),
-        producerNode
-    );
+        routingHelper.AddOrigins(
+            prefix.str(),
+            producerNode
+        );
+    }
 
     // ---------------------------------------------
     // Consumer
     // ---------------------------------------------
 
     ns3::ndn::AppHelper consumer(
-        consumerType == "cbr"
-            ? "ns3::ndn::ConsumerCbr"
-            : "ns3::ndn::ConsumerWindow"
+        "ns3::ndn::ConsumerCbr"
     );
 
     consumer.SetPrefix(
         prefix.str()
     );
 
-    if (consumerType == "cbr")
-    {
-        // ConsumerCbr has no PayloadSize/Size attributes of its
-        // own (those only shape the producer's response and the
-        // ConsumerWindow's Size->MaxSeq conversion) — compute
-        // MaxSeq ourselves the same way Ns3NdnBackend does on
-        // the Python side, so both sides agree on chunk count.
-        uint32_t totalChunks =
-            (modelBytes + payloadSize - 1) / payloadSize;
+    // ConsumerCbr has no PayloadSize/Size attribute of its own (those
+    // only shape the producer's response), so MaxSeq is computed
+    // manually here. It's an EXCLUSIVE bound in Consumer::SendPacket()
+    // ("if (m_seq >= m_seqMax) return"), so it must equal totalChunks
+    // (not totalChunks - 1) to actually send sequence numbers
+    // 0..totalChunks-1 — confirmed against ConsumerWindow's own
+    // Size->MaxSeq formula, which computes exactly
+    // floor(1 + sizeBytes/payloadSize) == totalChunks.
+    uint32_t totalChunks =
+        (modelBytes + payloadSize - 1) / payloadSize;
 
-        consumer.SetAttribute(
-            "Frequency",
-            DoubleValue(cbrFrequency)
-        );
+    consumer.SetAttribute(
+        "Frequency",
+        DoubleValue(cbrFrequency)
+    );
 
-        consumer.SetAttribute(
-            "MaxSeq",
-            IntegerValue(totalChunks - 1)
-        );
-    }
-    else
-    {
-        consumer.SetAttribute(
-            "Window",
-            UintegerValue(windowSize)
-        );
+    consumer.SetAttribute(
+        "Randomize",
+        StringValue(cbrRandomize)
+    );
 
-        consumer.SetAttribute(
-            "PayloadSize",
-            UintegerValue(payloadSize)
-        );
-
-        consumer.SetAttribute(
-            "Size",
-            DoubleValue(modelSizeMiB)
-        );
-    }
+    consumer.SetAttribute(
+        "MaxSeq",
+        IntegerValue(totalChunks)
+    );
 
     ApplicationContainer consumerApp =
         consumer.Install(

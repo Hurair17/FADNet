@@ -311,6 +311,44 @@ double modelSizeMiB =
 // Producer/consumer pairs
 // -----------------------------------------------------
 
+// Download: every silo asks for the exact same global-model name
+// (no /silo/<id> suffix) so the RSU's PIT aggregates concurrent
+// requests and its CS can serve the cached global model to
+// stragglers. Since the name never varies by silo, the producer
+// only needs to be installed once, here, before the silo loop —
+// installing it again per silo would just be numSilos redundant
+// Producer apps on the server for the exact same name.
+std::ostringstream downloadPrefix;
+downloadPrefix
+    << "/sfl/global/round/"
+    << round
+    << "/silo/";
+
+if (phase == "download")
+{
+    ns3::ndn::AppHelper globalProducer(
+        "ns3::ndn::Producer"
+    );
+
+    globalProducer.SetPrefix(
+        downloadPrefix.str()
+    );
+
+    globalProducer.SetAttribute(
+        "PayloadSize",
+        UintegerValue(payloadSize)
+    );
+
+    globalProducer.Install(
+        server
+    );
+
+    routingHelper.AddOrigins(
+        downloadPrefix.str(),
+        server
+    );
+}
+
 for (uint32_t silo = 0;
      silo < numSilos;
      ++silo)
@@ -319,13 +357,7 @@ for (uint32_t silo = 0;
 
     if (phase == "download")
     {
-        // Shared name for every silo (no /silo/<id> suffix) so the
-        // RSU's PIT aggregates concurrent requests and its CS can
-        // serve the cached global model to stragglers.
-        prefix
-            << "/sfl/global/round/"
-            << round
-            << "/silo/";
+        prefix << downloadPrefix.str();
     }
     else
     {
@@ -336,14 +368,14 @@ for (uint32_t silo = 0;
             << silo;
     }
 
+    // Upload only: each silo owns a distinct local model, so
+    // (unlike download) it needs its own Producer, installed
+    // below inside this loop.
     Ptr<Node> producerNode;
     Ptr<Node> consumerNode;
 
     if (phase == "download")
     {
-        // Server owns global model
-        producerNode = server;
-
         // Silo requests global model
         consumerNode = silos.Get(silo);
     }
@@ -357,30 +389,34 @@ for (uint32_t silo = 0;
     }
 
     // ---------------------------------------------
-    // Producer
+    // Producer (upload only — download's producer was already
+    // installed once, above the loop)
     // ---------------------------------------------
 
-    ns3::ndn::AppHelper producer(
-        "ns3::ndn::Producer"
-    );
+    if (phase == "upload")
+    {
+        ns3::ndn::AppHelper producer(
+            "ns3::ndn::Producer"
+        );
 
-    producer.SetPrefix(
-        prefix.str()
-    );
+        producer.SetPrefix(
+            prefix.str()
+        );
 
-    producer.SetAttribute(
-        "PayloadSize",
-        UintegerValue(payloadSize)
-    );
+        producer.SetAttribute(
+            "PayloadSize",
+            UintegerValue(payloadSize)
+        );
 
-    producer.Install(
-        producerNode
-    );
+        producer.Install(
+            producerNode
+        );
 
-    routingHelper.AddOrigins(
-        prefix.str(),
-        producerNode
-    );
+        routingHelper.AddOrigins(
+            prefix.str(),
+            producerNode
+        );
+    }
 
     // ---------------------------------------------
     // Consumer

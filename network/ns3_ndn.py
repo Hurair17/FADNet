@@ -14,6 +14,7 @@ class Ns3NdnBackend(NetworkBackend):
         program="gaia-sfl-ndn",
         trace_dir=None,
         trace_prefix="wired_ndn",
+        download_extra_args="",
         upload_extra_args="",
     ):
         self.model_bytes = model_bytes
@@ -31,11 +32,15 @@ class Ns3NdnBackend(NetworkBackend):
             self.ns3_dir, "scratch", program
         )
         self.trace_prefix = trace_prefix
-        # Extra CLI args appended only to the upload phase's ns-3
-        # invocation (e.g. "--consumerType=cbr --cbrFrequency=20"),
-        # since upload's many-concurrent-uploader contention needs
-        # different consumer pacing than download's single-broadcaster
-        # pattern, which works fine with the default ConsumerWindow.
+        # Extra CLI args appended to each phase's ns-3 invocation
+        # (e.g. "--consumerType=cbr --cbrFrequency=20"). ConsumerCbr's
+        # steady, fixed-rate pacing beats ConsumerWindow's bursty AIMD
+        # for both phases — download's own burst pattern caused uneven
+        # per-silo completion even with only one broadcaster, and
+        # upload's multi-concurrent-broadcaster contention needs it
+        # even more. Kept as separate, overridable args per phase in
+        # case that ever needs to differ again.
+        self.download_extra_args = download_extra_args
         self.upload_extra_args = upload_extra_args
 
         self.payload_size = 4096
@@ -57,21 +62,39 @@ class Ns3NdnBackend(NetworkBackend):
             return {}
 
         # The ns-3 topology is built fresh for every phase call, sized to
-        # cover every silo this run could ever address (not just the
-        # active ones this round), so silo IDs stay stable across rounds.
-        num_silos = max(silo_ids) + 1
+        # exactly the silos active this call — not max(silo_ids) + 1,
+        # which would force e.g. active silos [5, 6, 7, 9] into a
+        # 10-station topology (creating 6 real WiFi stations — with
+        # their own idle association-handshake overhead — that nobody
+        # asked for). gaia-sfl-ndn-wifi.cc indexes WiFi stations by
+        # position among the active silos (loopIdx), not by real silo
+        # ID, so a compact numSilos here is safe.
+        sorted_silo_ids = sorted(silo_ids)
+
+        num_silos = len(sorted_silo_ids)
+
+        active_silos_arg = ",".join(
+            str(silo_id) for silo_id in sorted_silo_ids
+        )
 
         sim_command = (
             f"{self.program} "
             f"--phase={phase} "
             f"--round={round_idx} "
             f"--numSilos={num_silos} "
+            f"--activeSilos={active_silos_arg} "
             f"--modelBytes={self.model_bytes} "
             f"--deadline={self.deadline}"
         )
 
-        if phase == "upload" and self.upload_extra_args:
-            sim_command += f" {self.upload_extra_args}"
+        extra_args = (
+            self.download_extra_args
+            if phase == "download"
+            else self.upload_extra_args
+        )
+
+        if extra_args:
+            sim_command += f" {extra_args}"
 
         print(
             f"[Round {round_idx}] "
@@ -107,6 +130,7 @@ class Ns3NdnBackend(NetworkBackend):
             trace_file=trace_file,
             phase=phase,
             silo_ids=silo_ids,
+            sorted_silo_ids=sorted_silo_ids,
         )
 
     def _parse_trace(
@@ -114,6 +138,7 @@ class Ns3NdnBackend(NetworkBackend):
         trace_file,
         phase,
         silo_ids,
+        sorted_silo_ids,
     ):
         results = {
             silo_id: {
@@ -149,7 +174,17 @@ class Ns3NdnBackend(NetworkBackend):
                 if phase == "download":
                     silo_id = node
                 else:
-                    silo_id = app_id
+                    # Upload's consumers all live on the same node
+                    # (the server), so ns-3 assigns their AppIds by
+                    # installation order (0, 1, 2, ...) rather than
+                    # by real silo ID. gaia-sfl-ndn-wifi.cc installs
+                    # them in the same sorted order as
+                    # sorted_silo_ids, so AppId N is the Nth
+                    # smallest requested silo ID, not silo ID N.
+                    if app_id >= len(sorted_silo_ids):
+                        continue
+
+                    silo_id = sorted_silo_ids[app_id]
 
                 if silo_id not in results:
                     continue

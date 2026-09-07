@@ -12,6 +12,7 @@ class Ns3TcpBackend(NetworkBackend):
         deadline=15.0,
         ns3_dir=None,
         program="gaia-sfl-tcp",
+        compact_topology=False,
     ):
         self.model_bytes = model_bytes
         self.deadline = deadline
@@ -22,6 +23,15 @@ class Ns3TcpBackend(NetworkBackend):
             "NS3_DIR", "/home/hurair/ndnSIM/ns-3"
         )
         self.program = program
+        # gaia-sfl-tcp.cc (wired) indexes its per-silo node/address
+        # arrays by the real silo ID directly, so it needs
+        # numSilos >= max(id)+1 — a sparse active set just leaves
+        # unused, zero-cost P2P links sitting idle. gaia-sfl-tcp-wifi.cc
+        # indexes WiFi stations by position among the active silos
+        # (loopIdx) instead, specifically so numSilos can be just
+        # len(active_silos) — matching max(id)+1 there would recreate
+        # the same idle-WiFi-station tax we fixed for the NDN backend.
+        self.compact_topology = compact_topology
 
         self.cumulative_network_time = 0.0
 
@@ -35,15 +45,18 @@ class Ns3TcpBackend(NetworkBackend):
         if len(silo_ids) == 0:
             return {}
 
+        sorted_silo_ids = sorted(silo_ids)
+
         silo_string = ",".join(
             str(silo_id)
-            for silo_id in silo_ids
+            for silo_id in sorted_silo_ids
         )
 
-        # The ns-3 topology is built fresh for every phase call, sized to
-        # cover every silo this run could ever address (not just the
-        # active ones this round), so silo IDs stay stable across rounds.
-        num_silos = max(silo_ids) + 1
+        num_silos = (
+            len(sorted_silo_ids)
+            if self.compact_topology
+            else max(silo_ids) + 1
+        )
 
         sim_command = (
             f"{self.program} "
@@ -54,7 +67,7 @@ class Ns3TcpBackend(NetworkBackend):
             f"--modelBytes={self.model_bytes} "
             f"--deadline={self.deadline} "
             f"--logFile={self.ns3_dir}/"
-            f"scratch/{self.program}/logs/wired_tcp_network.csv"
+            f"scratch/{self.program}/logs/{self.program}_network.csv"
         )
 
         print(

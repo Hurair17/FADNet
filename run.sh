@@ -33,8 +33,23 @@ LOG_FREQ="${LOG_FREQ:-40}"
 
 NETWORK_NAME="${NETWORK_NAME:-gaia}"
 
-# Change to wifi_tcp if required.
-NETWORK_BACKEND="${NETWORK_BACKEND:-wifi_ndn}"
+# Change to wifi_ndn/wired_ndn/wired_tcp if required.
+NETWORK_BACKEND="${NETWORK_BACKEND:-wifi_tcp}"
+
+# ndnSIM (ndn-cxx + NFD) is only needed for the NDN backends. It's a
+# large third-party codebase we don't control, and it's known to fail
+# to compile on some newer compilers (missing "#include <optional>"
+# in its own ndn-cxx fork) — patched below when it IS built, but
+# skipping the clone+build entirely for backends that don't need it
+# avoids that risk (and a lot of build time) altogether.
+case "$NETWORK_BACKEND" in
+    wired_ndn|wifi_ndn)
+        NEEDS_NDNSIM=1
+        ;;
+    *)
+        NEEDS_NDNSIM=0
+        ;;
+esac
 
 # ns-3 / ndnSIM installation location
 NDNSIM_ROOT="${NDNSIM_ROOT:-$ROOT_DIR/ndnSIM}"
@@ -287,26 +302,53 @@ if [ ! -d "$NS3_DIR" ]; then
 
 fi
 
-if [ ! -d "$NS3_DIR/src/ndnSIM" ]; then
+if [ "$NEEDS_NDNSIM" -eq 1 ]; then
 
-    echo "[INFO] Cloning ndnSIM..."
+    if [ ! -d "$NS3_DIR/src/ndnSIM" ]; then
 
-    git clone \
-        --recursive \
-        https://github.com/named-data-ndnSIM/ndnSIM.git \
-        "$NS3_DIR/src/ndnSIM"
+        echo "[INFO] Cloning ndnSIM..."
+
+        git clone \
+            --recursive \
+            https://github.com/named-data-ndnSIM/ndnSIM.git \
+            "$NS3_DIR/src/ndnSIM"
+
+    else
+
+        echo "[INFO] ndnSIM already exists."
+
+        (
+            cd "$NS3_DIR/src/ndnSIM"
+
+            git submodule update \
+                --init \
+                --recursive
+        )
+
+    fi
+
+    # Known bug in ndnSIM's own ndn-cxx fork: scheduler.hpp uses
+    # std::optional without including <optional>. Compiles fine when
+    # some other header happens to pull it in transitively (as it
+    # does on some compiler/libstdc++ combinations), but fails hard
+    # on others. Patch it in directly; idempotent (skips if already
+    # present) so re-runs are safe.
+    SCHEDULER_HPP="$NS3_DIR/src/ndnSIM/ndn-cxx/ndn-cxx/util/scheduler.hpp"
+
+    if [ -f "$SCHEDULER_HPP" ] && \
+       ! grep -q "^#include <optional>" "$SCHEDULER_HPP"; then
+
+        echo "[INFO] Patching missing <optional> include in ndn-cxx scheduler.hpp..."
+
+        sed -i \
+            '1i #include <optional>' \
+            "$SCHEDULER_HPP"
+
+    fi
 
 else
 
-    echo "[INFO] ndnSIM already exists."
-
-    (
-        cd "$NS3_DIR/src/ndnSIM"
-
-        git submodule update \
-            --init \
-            --recursive
-    )
+    echo "[INFO] NETWORK_BACKEND=$NETWORK_BACKEND does not need ndnSIM — skipping."
 
 fi
 
@@ -349,6 +391,7 @@ PROJECT_SCENARIOS=(
     "gaia-sfl-ndn"
     "gaia-sfl-ndn-wifi"
     "gaia-sfl-tcp"
+    "gaia-sfl-tcp-wifi"
 )
 
 for scenario in "${PROJECT_SCENARIOS[@]}"; do
