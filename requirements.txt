@@ -1,0 +1,17 @@
+# torch/torchvision are intentionally NOT listed here — run.sh
+# expects a CUDA-enabled PyTorch already provided by the platform
+# image, and verifies it separately; installing a generic version
+# here could silently replace a correctly matched CUDA build.
+numpy
+pandas
+scipy
+scikit-learn
+pillow
+matplotlib
+tqdm
+openpyxl
+cvxpy
+opencv-python
+networkx
+tensorboard
+torch_optimizer
