@@ -314,7 +314,8 @@ main(int argc, char* argv[])
     // receiver's measured SNR, so there's no "bad initial guess" or
     // stuck-learning state to get trapped in.
     wifi.SetRemoteStationManager(
-        "ns3::IdealWifiManager"
+        // "ns3::IdealWifiManager"
+        "ns3::MinstrelHtWifiManager"
     );
 
     Ssid ssid = Ssid("gaia-sfl-rsu");
