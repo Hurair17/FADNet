@@ -388,11 +388,19 @@ echo "=================================================="
 #
 
 PROJECT_SCENARIOS=(
-    "gaia-sfl-ndn"
-    "gaia-sfl-ndn-wifi"
     "gaia-sfl-tcp"
     "gaia-sfl-tcp-wifi"
 )
+
+# The NDN scenarios #include ns3/ndnSIM-module.h, which only exists
+# when ndnSIM itself was built — copying/building them without it
+# fails outright, so only include them when they'll actually compile.
+if [ "$NEEDS_NDNSIM" -eq 1 ]; then
+    PROJECT_SCENARIOS+=(
+        "gaia-sfl-ndn"
+        "gaia-sfl-ndn-wifi"
+    )
+fi
 
 for scenario in "${PROJECT_SCENARIOS[@]}"; do
 
