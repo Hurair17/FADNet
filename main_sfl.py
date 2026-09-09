@@ -56,6 +56,7 @@ if __name__ == "__main__":
             # only ever needs to be len(active_silos) — no idle
             # stations, unlike the wired scenario's per-ID P2P links.
             compact_topology=True,
+            extra_args="--wifiMode=adhoc",
         )
     else:
 

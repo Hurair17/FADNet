@@ -13,6 +13,7 @@ class Ns3TcpBackend(NetworkBackend):
         ns3_dir=None,
         program="gaia-sfl-tcp",
         compact_topology=False,
+        extra_args="",
     ):
         self.model_bytes = model_bytes
         self.deadline = deadline
@@ -32,6 +33,11 @@ class Ns3TcpBackend(NetworkBackend):
         # len(active_silos) — matching max(id)+1 there would recreate
         # the same idle-WiFi-station tax we fixed for the NDN backend.
         self.compact_topology = compact_topology
+        # Extra CLI args appended to every phase's ns-3 invocation
+        # (e.g. "--wifiMode=adhoc"). Same value applies to both
+        # download and upload, unlike Ns3NdnBackend's phase-specific
+        # args — nothing here currently needs to differ by phase.
+        self.extra_args = extra_args
 
         self.cumulative_network_time = 0.0
 
@@ -69,6 +75,9 @@ class Ns3TcpBackend(NetworkBackend):
             f"--logFile={self.ns3_dir}/"
             f"scratch/{self.program}/logs/{self.program}_network.csv"
         )
+
+        if self.extra_args:
+            sim_command += f" {self.extra_args}"
 
         print(
             f"[Round {round_idx}] "

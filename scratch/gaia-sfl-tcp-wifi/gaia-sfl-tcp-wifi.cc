@@ -132,6 +132,8 @@ main(int argc, char* argv[])
 
     double deadline = 25.0;
 
+    std::string wifiMode = "infra";
+
     std::string logFile =
         "/home/hurair/ndnSIM/ns-3/"
         "scratch/gaia-sfl-tcp-wifi/"
@@ -188,6 +190,19 @@ main(int argc, char* argv[])
         "logFile",
         "Network statistics CSV log file",
         logFile
+    );
+
+    cmd.AddValue(
+        "wifiMode",
+        "\"infra\" (default): RSU is a real AP (ns3::ApWifiMac), "
+        "silos are stations (ns3::StaWifiMac) that associate to it. "
+        "\"adhoc\": every node (RSU and silos) uses ns3::AdhocWifiMac "
+        "instead — no AP role, no association handshake. Unlike the "
+        "NDN scenario, TCP does real ARP-resolved unicast addressing "
+        "regardless of mode, so ad-hoc shouldn't cause the same kind "
+        "of collapse NDN's always-broadcast transport did — untested "
+        "assumption though, verify empirically before relying on it.",
+        wifiMode
     );
 
     cmd.Parse(argc, argv);
@@ -313,30 +328,46 @@ main(int argc, char* argv[])
     // guessing, it computes the appropriate rate directly from each
     // receiver's measured SNR, so there's no "bad initial guess" or
     // stuck-learning state to get trapped in.
+    // MinstrelHtWifiManager
     wifi.SetRemoteStationManager(
-        // "ns3::IdealWifiManager"
         "ns3::MinstrelHtWifiManager"
     );
 
-    Ssid ssid = Ssid("gaia-sfl-rsu");
     WifiMacHelper wifiMac;
 
-    wifiMac.SetType(
-        "ns3::StaWifiMac",
-        "Ssid", SsidValue(ssid),
-        "ActiveProbing", BooleanValue(false)
-    );
+    NetDeviceContainer staDevices;
+    NetDeviceContainer apDevice;
 
-    NetDeviceContainer staDevices =
-        wifi.Install(wifiPhy, wifiMac, silos);
+    if (wifiMode == "adhoc")
+    {
+        // No AP, no association — every node (RSU included) is a
+        // symmetric peer on the same channel.
+        wifiMac.SetType(
+            "ns3::AdhocWifiMac"
+        );
 
-    wifiMac.SetType(
-        "ns3::ApWifiMac",
-        "Ssid", SsidValue(ssid)
-    );
+        staDevices = wifi.Install(wifiPhy, wifiMac, silos);
+        apDevice = wifi.Install(wifiPhy, wifiMac, rsu);
+    }
+    else
+    {
+        Ssid ssid = Ssid("gaia-sfl-rsu");
 
-    NetDeviceContainer apDevice =
-        wifi.Install(wifiPhy, wifiMac, rsu);
+        wifiMac.SetType(
+            "ns3::StaWifiMac",
+            "Ssid", SsidValue(ssid),
+            "ActiveProbing", BooleanValue(false)
+        );
+
+        staDevices = wifi.Install(wifiPhy, wifiMac, silos);
+
+        wifiMac.SetType(
+            "ns3::ApWifiMac",
+            "Ssid", SsidValue(ssid)
+        );
+
+        apDevice = wifi.Install(wifiPhy, wifiMac, rsu);
+    }
 
     // -----------------------------------------------------
     // Node positions — same ring layout as gaia-sfl-ndn-wifi.cc.
@@ -451,7 +482,7 @@ main(int argc, char* argv[])
     // round (observed: silo 8 consistently got 0/4 SYNs through).
     // Starting the transfer later gives every station room to finish
     // associating first.
-    const double startTime = 3.0;
+    const double startTime = 10.;
 
     uint16_t basePort = 9000;
 
